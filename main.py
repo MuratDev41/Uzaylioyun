@@ -13,6 +13,10 @@ class AlienEscapeGame:
         self.root.title("Uzaylıdan Kaçış - Şifreli Mesaj")
         self.root.geometry("800x600")
         self.root.configure(bg='#1a1a2e')
+        self.timer_stop_event = threading.Event()
+        self.countdown_thread = None
+        self.timer_lock = threading.Lock()
+
         
         # Initialize pygame mixer for sound
         pygame.mixer.init()
@@ -30,7 +34,7 @@ class AlienEscapeGame:
         self.wrong_guesses = 0
         self.max_wrong = 6
         self.time_limit = 10  # seconds per guess
-        self.timer_running = False
+        self.timer_stop_event.set()
         self.game_over = False
         self.hint_used = False
         self.start_time = None
@@ -174,24 +178,32 @@ class AlienEscapeGame:
         self.guessed_label.config(text=guessed_text)
         
     def start_timer(self):
-        if not self.game_over:
-            self.timer_running = True
-            self.countdown_thread = threading.Thread(target=self.countdown)
-            self.countdown_thread.daemon = True
-            self.countdown_thread.start()
+        if self.game_over:
+            return
+
+        # Stop previous timer thread
+        if self.countdown_thread and self.countdown_thread.is_alive():
+            self.timer_stop_event.set()
+            self.countdown_thread.join()
+
+        # Prepare and start a new timer
+        self.timer_stop_event.clear()
+        self.countdown_thread = threading.Thread(target=self.countdown)
+        self.countdown_thread.daemon = True
+        self.countdown_thread.start()
             
     def countdown(self):
         for i in range(self.time_limit, 0, -1):
-            if not self.timer_running or self.game_over:
+            if self.timer_stop_event.is_set() or self.game_over:
                 return
             self.timer_label.config(text=f"Süre: {i}")
             time.sleep(1)
-        
-        if self.timer_running and not self.game_over:
+
+        if not self.timer_stop_event.is_set() and not self.game_over:
             self.root.after(0, self.time_up)
             
     def time_up(self):
-        self.timer_running = False
+        self.timer_stop_event.set()
         self.wrong_guesses += 1
         self.play_sound("wrong")
         self.update_alien_position()
@@ -206,46 +218,51 @@ class AlienEscapeGame:
     def make_guess(self, event=None):
         if self.game_over:
             return
-            
+
         guess = self.guess_entry.get().upper().strip()
         self.guess_entry.delete(0, tk.END)
-        
+
         if not guess or len(guess) != 1 or not guess.isalpha():
             messagebox.showerror("Hata", "Lütfen tek bir harf girin!")
             return
-            
+
         if guess in self.guessed_letters:
             messagebox.showwarning("Uyarı", "Bu harfi zaten tahmin ettiniz!")
             return
-            
-        self.timer_running = False
+
+        self.timer_stop_event.set()  # Stop the current timer
         self.guessed_letters.append(guess)
-        
+
         if guess in self.current_phrase:
             self.play_sound("correct")
             self.update_phrase_display()
-            
+
             if self.check_win():
                 self.game_over_win()
                 return
+            else:
+                self.update_info()
+                self.update_guessed_letters()
+                self.start_timer()  # <-- Start timer again on correct guess
         else:
             self.play_sound("wrong")
-            
+
             if guess in self.trap_letters:
                 self.wrong_guesses += 2
                 messagebox.showwarning("Tuzak Harf!", f"'{guess}' tuzak harf! Uzaylı 2 adım yaklaştı!")
             else:
                 self.wrong_guesses += 1
-                
-        self.update_alien_position()
-        self.update_info()
-        self.update_guessed_letters()
-        
-        if self.wrong_guesses >= self.max_wrong:
-            self.game_over_lose()
-        else:
-            self.start_timer()
-            
+
+            self.update_alien_position()
+            self.update_info()
+            self.update_guessed_letters()
+
+            if self.wrong_guesses >= self.max_wrong:
+                self.game_over_lose()
+            else:
+                self.start_timer()  # Timer restart on wrong guess too
+
+
     def use_hint(self):
         if self.hint_used or self.game_over:
             return
@@ -279,7 +296,7 @@ class AlienEscapeGame:
         
     def game_over_win(self):
         self.game_over = True
-        self.timer_running = False
+        self.timer_stop_event.set()
         self.play_sound("win")
         
         elapsed_time = int(time.time() - self.start_time)
@@ -293,7 +310,7 @@ class AlienEscapeGame:
         
     def game_over_lose(self):
         self.game_over = True
-        self.timer_running = False
+        self.timer_stop_event.set()
         self.play_sound("lose")
         
         elapsed_time = int(time.time() - self.start_time)
